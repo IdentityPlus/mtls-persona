@@ -50,8 +50,8 @@ The time of the validation of the certificate change is specified by the reload 
 The only additional parameter to configure is the port mappings:
 
         {
-            "inbound": "192.168.0.99:25432",
-            "outbound": "192.168.0.99:15432"
+            "inbound": "localhost:5432",
+            "outbound": "remote.domain.com:5432" // IP address can be used instead of domains
         }
 
 While it works with fixed destination, mTLS Persona allows for multiple mappings to be configured for the same instance. This means that one or multiple local applications can reach out to one or multiple services using the mTLS Persona to forward the mTLS ID of the local machine, which is the identity principle behind Identity Plus (each device has it's own ID). If the identity abstraction is done at the application level, the added granularity can be achieved by launching multiple instances of mTLS Persona, with specific port mappings and identity mappings. An important note here is that rotation needs to be scheduled for all such mTLS IDs. 
