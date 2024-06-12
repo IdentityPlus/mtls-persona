@@ -55,3 +55,16 @@ The only additional parameter to configure is the port mappings:
         }
 
 While it works with fixed destination, mTLS Persona allows for multiple mappings to be configured for the same instance. This means that one or multiple local applications can reach out to one or multiple services using the mTLS Persona to forward the mTLS ID of the local machine, which is the identity principle behind Identity Plus (each device has it's own ID). If the identity abstraction is done at the application level, the added granularity can be achieved by launching multiple instances of mTLS Persona, with specific port mappings and identity mappings. An important note here is that rotation needs to be scheduled for all such mTLS IDs. 
+
+## Building mTLS Persona
+
+mTLS Persona is written in GoLang and expected to run as an executable process. As a GoLang application is is platform independent in the sense that it can be compiled to work with all operating systems and processor architectures. Please adapt it to your use case by building mTLS persona according to your environments specifics:
+
+1. Install GoLang: for Debian based Linux enviornments this would be sudo apt-gets install golang
+2. Clone the repository in a local directory: git clone https://github.com/IdentityPlus/mtls-persona.git
+3. Open a terminal and change into the local directory
+4. Build mTLS Persona: go build mtls-persona.go
+5. Use the Identity Plus CLI to obtain an mTLS ID associated with the service (please refer to the Identity Plus CLI Documentation for this)
+6. Edit config.json and adapta it to your needs (make the paths match the Identity Destination)
+7. Launch mTLS Persona and test it by pointing a client application to it.
+8. Make it into a service to launch on startup, before your client applciation.
