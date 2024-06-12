@@ -10,8 +10,8 @@
         }
     ],
 
-    "client_cert": "/media/Work/Access/stefan/local-postgres/for-posgres.certificate.pem",
-    "client_key": "/media/Work/Access/stefan/local-postgres/for-posgres.privatekey.pem",
-    "ca_cert": "/media/Work/Access/stefan/local-postgres/identity-plus-node-ca-certificate-trust-store.pem",
+    "client_cert": "/etc/local-postgres/for-posgres.certificate.pem",
+    "client_key": "/etc/local-postgres/for-posgres.privatekey.pem",
+    "ca_cert": "/etc/local-postgres/identity-plus-node-ca-certificate-trust-store.pem",
     "reload_hour": 3
 }
