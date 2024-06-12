@@ -1,0 +1,17 @@
+{
+    "address_pairs": [
+        {
+            "inbound": "192.168.0.99:25432",
+            "outbound": "192.168.0.99:15432"
+        },
+        {
+            "inbound": "192.168.0.99:35432",
+            "outbound": "192.168.0.99:15432"
+        }
+    ],
+
+    "client_cert": "/media/Work/Access/stefan/local-postgres/for-posgres.certificate.pem",
+    "client_key": "/media/Work/Access/stefan/local-postgres/for-posgres.privatekey.pem",
+    "ca_cert": "/media/Work/Access/stefan/local-postgres/identity-plus-node-ca-certificate-trust-store.pem",
+    "reload_hour": 3
+}
