@@ -152,10 +152,12 @@ func handle_connection(inbound_conn net.Conn, inbound_addr, outbound_addr string
 	defer inbound_conn.Close()
 
 	outbound_conn, err := get_outbound_conn(outbound_addr)
+	
 	if err != nil {
 		log.Printf("Failed to get outbound connection to %s: %v", outbound_addr, err)
 		return
 	}
+
 	defer outbound_conn.Close()
 
 	log.Printf("Forwarding traffic between %s (inbound: %s) and %s (outbound)", inbound_conn.RemoteAddr(), inbound_addr, outbound_addr)
@@ -184,6 +186,11 @@ func get_outbound_conn(outbound_addr string) (net.Conn, error) {
 	conn, err := tls.Dial("tcp", outbound_addr, tls_config)
 	if err != nil {
 		return nil, fmt.Errorf("failed to connect to outbound address %s: %v", outbound_addr, err)
+	}
+	
+	if tcp_conn, ok := conn.NetConn().(*net.TCPConn); ok {
+		tcp_conn.SetKeepAlive(true)
+		tcp_conn.SetKeepAlivePeriod(5 * time.Minute)
 	}
 
 	return conn, nil
