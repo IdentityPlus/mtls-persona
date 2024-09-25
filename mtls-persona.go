@@ -15,10 +15,10 @@ import (
 )
 
 type config struct {
-	address_pairs []address_pair `json:"address_pairs"`
-	client_cert   string         `json:"client_cert"`
-	client_key    string         `json:"client_key"`
-	ca_cert       string         `json:"ca_cert"`
+	Address_Pairs []address_pair `json:"Address_Pairs"`
+	Client_Cert   string         `json:"Client_Cert"`
+	Client_Key    string         `json:"Client_Key"`
+	CA_Cert       string         `json:"CA_Cert"`
 	auto_reload   bool            `json:"auto_reload"`
 }
 
@@ -40,9 +40,9 @@ var (
 )
 
 type certInfo struct {
-	client_cert_mod_time time.Time
-	client_key_mod_time  time.Time
-	ca_cert_mod_time     time.Time
+	Client_Cert_Mod_Time time.Time
+	Client_Key_Mod_Time  time.Time
+	CA_Cert_Mod_Time     time.Time
 }
 
 func main() {
@@ -62,7 +62,7 @@ func main() {
 	}
 
 	// Start listening for inbound connections on multiple addresses
-	for _, pair := range cfg.address_pairs {
+	for _, pair := range cfg.Address_Pairs {
 		go start_listener(pair.Inbound, pair.Outbound)
 	}
 
@@ -120,34 +120,34 @@ func reload_certificates() error {
 	defer mu.Unlock()
 
 	// Check if the client certificate has changed
-	client_certChanged, client_cert_mod_time, err := file_has_changed(cfg.client_cert, last_cert_info.client_cert_mod_time)
+	Client_CertChanged, Client_Cert_Mod_Time, err := file_has_changed(cfg.Client_Cert, last_cert_info.Client_Cert_Mod_Time)
 	if err != nil {
 		return fmt.Errorf("failed to check client certificate: %v", err)
 	}
 
 	// Check if the client key has changed
-	client_keyChanged, client_key_mod_time, err := file_has_changed(cfg.client_key, last_cert_info.client_key_mod_time)
+	Client_KeyChanged, Client_Key_Mod_Time, err := file_has_changed(cfg.Client_Key, last_cert_info.Client_Key_Mod_Time)
 	if err != nil {
 		return fmt.Errorf("failed to check client key: %v", err)
 	}
 
 	// Check if the CA certificate has changed
-	ca_certChanged, ca_cert_mod_time, err := file_has_changed(cfg.ca_cert, last_cert_info.ca_cert_mod_time)
+	CA_CertChanged, CA_Cert_Mod_Time, err := file_has_changed(cfg.CA_Cert, last_cert_info.CA_Cert_Mod_Time)
 	if err != nil {
 		return fmt.Errorf("failed to check CA certificate: %v", err)
 	}
 
 	// If no files have changed, skip reloading
-	if !client_certChanged && !client_keyChanged && !ca_certChanged {
+	if !Client_CertChanged && !Client_KeyChanged && !CA_CertChanged {
 		log.Println("No certificate changes detected; skipping reload.")
 		return nil
 	}
 
 	// Reload the certificates
-	log.Printf("Reloading certificates from files:\n        Cert File=%s, \n        Key File=%s, \n        CA File=%s", cfg.client_cert, cfg.client_key, cfg.ca_cert)
+	log.Printf("Reloading certificates from files:\n        Cert File=%s, \n        Key File=%s, \n        CA File=%s", cfg.Client_Cert, cfg.Client_Key, cfg.CA_Cert)
 
 	// Load the client certificate and key
-	cert, err := tls.LoadX509KeyPair(cfg.client_cert, cfg.client_key)
+	cert, err := tls.LoadX509KeyPair(cfg.Client_Cert, cfg.Client_Key)
 	if err != nil {
 		return fmt.Errorf("failed to load client certificate and key: %v", err)
 	}
@@ -166,19 +166,19 @@ func reload_certificates() error {
 	// -------------------
 
 	// Load the CA certificate
-	ca_cert_pool := x509.NewCertPool()
-	ca_cert_bytes, err := ioutil.ReadFile(cfg.ca_cert)
+	CA_Cert_pool := x509.NewCertPool()
+	CA_Cert_bytes, err := ioutil.ReadFile(cfg.CA_Cert)
 	if err != nil {
 		return fmt.Errorf("failed to read CA certificate: %v", err)
 	}
-	if ok := ca_cert_pool.AppendCertsFromPEM(ca_cert_bytes); !ok {
+	if ok := CA_Cert_pool.AppendCertsFromPEM(CA_Cert_bytes); !ok {
 		return fmt.Errorf("failed to append CA certificate to pool")
 	}
 
 	// Update the TLS configuration
 	new_tls_config := &tls.Config{
 		Certificates:       []tls.Certificate{cert},
-		RootCAs:            ca_cert_pool,
+		RootCAs:            CA_Cert_pool,
 		InsecureSkipVerify: true, // Use this only for testing; remove in production!
 	}
 
@@ -191,9 +191,9 @@ func reload_certificates() error {
 	close_active_connections()
 
 	// Update last modification times
-	last_cert_info.client_cert_mod_time = client_cert_mod_time
-	last_cert_info.client_key_mod_time = client_key_mod_time
-	last_cert_info.ca_cert_mod_time = ca_cert_mod_time
+	last_cert_info.Client_Cert_Mod_Time = Client_Cert_Mod_Time
+	last_cert_info.Client_Key_Mod_Time = Client_Key_Mod_Time
+	last_cert_info.CA_Cert_Mod_Time = CA_Cert_Mod_Time
 
 	log.Println("Certificates reloaded successfully and outbound connections closed.")
 
