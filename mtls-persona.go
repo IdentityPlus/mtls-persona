@@ -16,11 +16,9 @@ import (
 
 type config struct {
 	AddressPairs    []address_pair  `json:"address_pairs"`
-	IdentityFolder  string          `json:"identity_directory"`
-	AgentName       string          `json:"agent_name"`
-	ClientCert      string          `json:"client_cert"`
-	ClientKey       string          `json:"client_key"`
-	CaCert          string          `json:"broker_ca"`
+	IdentityFolder  string          `json:"mtls_id_directory"`
+	AgentName       string          `json:"mtls_id"`
+	CaCert          string          `json:"identity_broker_ca"`
 	AutoReload      bool            `json:"auto_reload"`
 	Verbose		    bool			`json:"verbose"`
 }
