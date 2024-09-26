@@ -15,11 +15,14 @@ import (
 )
 
 type config struct {
-	Address_Pairs []address_pair `json:"Address_Pairs"`
-	Client_Cert   string         `json:"Client_Cert"`
-	Client_Key    string         `json:"Client_Key"`
-	CA_Cert       string         `json:"CA_Cert"`
-	auto_reload   bool            `json:"auto_reload"`
+	AddressPairs    []address_pair  `json:"address_pairs"`
+	IdentityFolder  string          `json:"identity_directory"`
+	AgentName       string          `json:"agent_name"`
+	ClientCert      string          `json:"client_cert"`
+	ClientKey       string          `json:"client_key"`
+	CaCert          string          `json:"broker_ca"`
+	AutoReload      bool            `json:"auto_reload"`
+	Verbose		    bool			`json:"verbose"`
 }
 
 type address_pair struct {
@@ -27,25 +30,22 @@ type address_pair struct {
 	Outbound string `json:"outbound"`
 }
 
+
 var (
-	tls_config    *tls.Config
-	cfg           *config
-	mu            sync.Mutex
-	tls_config_mu sync.RWMutex
-	last_cert_info  certInfo // Struct to track certificate file modification time
-	active_connections   = struct {
+	tls_config          *tls.Config
+	cfg                 *config
+	mu                  sync.Mutex
+	tls_config_mu       sync.RWMutex
+	cert_file_time      time.Time
+	active_conns   = struct {
 		sync.RWMutex
-		connections []net.Conn // Track active outbound connections
+		pool map[string]net.Conn
 	}{}
 )
 
-type certInfo struct {
-	Client_Cert_Mod_Time time.Time
-	Client_Key_Mod_Time  time.Time
-	CA_Cert_Mod_Time     time.Time
-}
-
 func main() {
+	active_conns.pool = make(map[string]net.Conn)
+
 	// Load initial configuration from file
 	var err error
 	cfg, err = load_config("config.json")
@@ -57,29 +57,45 @@ func main() {
 	log.Printf("Loaded configuration: %+v", cfg)
 
 	// Load initial certificates
-	if err := reload_certificates(); err != nil {
+	if certificate, err := reload_certificates(); err != nil {
 		log.Fatalf("Failed to load initial certificates: %v", err)
+	} else {
+		log.Println("Certificates loaded successfully")
+		log_cert_details(certificate)
 	}
 
+
 	// Start listening for inbound connections on multiple addresses
-	for _, pair := range cfg.Address_Pairs {
+	for _, pair := range cfg.AddressPairs {
 		go start_listener(pair.Inbound, pair.Outbound)
 	}
 
-	// Schedule certificate reload
-	if cfg.auto_reload == true { 
+	// Schedule certificate reload at the specified hour each day
+	if cfg.AutoReload == true {
+
 		go func() {
 			for {
 				now := time.Now()
 				next_reload := now.Add(1 * time.Minute)
 				time.Sleep(time.Until(next_reload))
-				if err := reload_certificates(); err != nil {
-					log.Printf("Failed to reload certificates: %v", err)
+
+				new_cert, err := reload_certificates()
+
+				if err != nil {
+					log.Printf("Unable to reload certificates: %v", err)
+				} else if new_cert != nil {
+					close_active_connections();
+					log.Printf("Certificates reloaded successfully at %v", next_reload)
+					log_cert_details(new_cert)
+				} else if cfg.Verbose {
+					log.Println("No certificate changes detected; skipping reload.")
 				}
+				
 			}
 		}()
+
 	} else {
-		log.Printf("Certificate auto-reload disabled. Application needs restart to pick up rotated cerfificate.\n")
+		log.Printf("Autoreload disabled. Service needs to be restarted to pick up rotated certficates.")
 	}
 
 	// Prevent the main function from exiting
@@ -115,102 +131,71 @@ func file_has_changed(filepath string, lastModTime time.Time) (bool, time.Time, 
 	return false, fileInfo.ModTime(), nil
 }
 
-func reload_certificates() error {
+func log_cert_details(cert *x509.Certificate){
+	fmt.Printf("        Subject: %s\n", cert.Subject)
+	fmt.Printf("        Serial Number: %s\n", cert.SerialNumber.String())
+	fmt.Printf("        Not Before: %s\n", cert.NotBefore)
+	fmt.Printf("        Not After: %s\n------------------------\n", cert.NotAfter)
+}
+
+func reload_certificates() (*x509.Certificate, error) {
+	cert_changed, last_mod_time, err := file_has_changed(cfg.IdentityFolder + "/" + cfg.AgentName + ".cer", cert_file_time)
+
+	// If no files have changed, skip reloading
+	if !cert_changed {
+		return nil, nil
+	}
+
 	mu.Lock()
 	defer mu.Unlock()
 
-	// Check if the client certificate has changed
-	Client_CertChanged, Client_Cert_Mod_Time, err := file_has_changed(cfg.Client_Cert, last_cert_info.Client_Cert_Mod_Time)
+	log.Printf("Reloading certificates from files:\n        Cert File=%s, \n        Key File=%s, \n        CA File=%s", cfg.IdentityFolder + "/" + cfg.AgentName + ".cer", cfg.IdentityFolder + "/" + cfg.AgentName + ".key", cfg.CaCert)
+
+	cert, err := tls.LoadX509KeyPair(cfg.IdentityFolder + "/" + cfg.AgentName + ".cer", cfg.IdentityFolder + "/" + cfg.AgentName + ".key")
 	if err != nil {
-		return fmt.Errorf("failed to check client certificate: %v", err)
+		return nil, fmt.Errorf("failed to load client certificate and key: %v", err)
 	}
-
-	// Check if the client key has changed
-	Client_KeyChanged, Client_Key_Mod_Time, err := file_has_changed(cfg.Client_Key, last_cert_info.Client_Key_Mod_Time)
-	if err != nil {
-		return fmt.Errorf("failed to check client key: %v", err)
-	}
-
-	// Check if the CA certificate has changed
-	CA_CertChanged, CA_Cert_Mod_Time, err := file_has_changed(cfg.CA_Cert, last_cert_info.CA_Cert_Mod_Time)
-	if err != nil {
-		return fmt.Errorf("failed to check CA certificate: %v", err)
-	}
-
-	// If no files have changed, skip reloading
-	if !Client_CertChanged && !Client_KeyChanged && !CA_CertChanged {
-		log.Println("No certificate changes detected; skipping reload.")
-		return nil
-	}
-
-	// Reload the certificates
-	log.Printf("Reloading certificates from files:\n        Cert File=%s, \n        Key File=%s, \n        CA File=%s", cfg.Client_Cert, cfg.Client_Key, cfg.CA_Cert)
-
-	// Load the client certificate and key
-	cert, err := tls.LoadX509KeyPair(cfg.Client_Cert, cfg.Client_Key)
-	if err != nil {
-		return fmt.Errorf("failed to load client certificate and key: %v", err)
-	}
-
+	
 	// ----- print certificate details ------------
 	parsedCert, err := x509.ParseCertificate(cert.Certificate[0])
 	if err != nil {
-		return fmt.Errorf("Failed to parse certificate: %v\n", err)
+		return nil, fmt.Errorf("Failed to parse certificate: %v\n", err)
 	}
 
-	// Print certificate details
-	fmt.Printf("        Subject: %s\n", parsedCert.Subject)
-	fmt.Printf("        Serial Number: %s\n", parsedCert.SerialNumber.String())
-	fmt.Printf("        Not Before: %s\n", parsedCert.NotBefore)
-	fmt.Printf("        Not After: %s\n------------------------\n", parsedCert.NotAfter)
-	// -------------------
-
-	// Load the CA certificate
-	CA_Cert_pool := x509.NewCertPool()
-	CA_Cert_bytes, err := ioutil.ReadFile(cfg.CA_Cert)
+	ca_cert_pool := x509.NewCertPool()
+	ca_cert_bytes, err := ioutil.ReadFile(cfg.CaCert)
 	if err != nil {
-		return fmt.Errorf("failed to read CA certificate: %v", err)
+		return nil, fmt.Errorf("failed to read CA certificate: %v", err)
 	}
-	if ok := CA_Cert_pool.AppendCertsFromPEM(CA_Cert_bytes); !ok {
-		return fmt.Errorf("failed to append CA certificate to pool")
+	if ok := ca_cert_pool.AppendCertsFromPEM(ca_cert_bytes); !ok {
+		return nil, fmt.Errorf("failed to append CA certificate to pool")
 	}
 
-	// Update the TLS configuration
 	new_tls_config := &tls.Config{
 		Certificates:       []tls.Certificate{cert},
-		RootCAs:            CA_Cert_pool,
+		RootCAs:            ca_cert_pool,
 		InsecureSkipVerify: true, // Use this only for testing; remove in production!
 	}
 
-	// Safely update the TLS configuration
 	tls_config_mu.Lock()
 	tls_config = new_tls_config
 	tls_config_mu.Unlock()
 
-	// Close all active outbound connections after reloading certificates
-	close_active_connections()
+	cert_file_time = last_mod_time
 
-	// Update last modification times
-	last_cert_info.Client_Cert_Mod_Time = Client_Cert_Mod_Time
-	last_cert_info.Client_Key_Mod_Time = Client_Key_Mod_Time
-	last_cert_info.CA_Cert_Mod_Time = CA_Cert_Mod_Time
-
-	log.Println("Certificates reloaded successfully and outbound connections closed.")
-
-	return nil
+	return parsedCert, nil
 }
 
-// Close all active outbound connections
 func close_active_connections() {
-	active_connections.Lock()
-	defer active_connections.Unlock()
+	active_conns.Lock()
+	defer active_conns.Unlock()
 
 	log.Println("Closing all active outbound connections")
-	for _, conn := range active_connections.connections {
+	for _, conn := range active_conns.pool {
+		// will trigger cleanup and cascade the closing tot he corresponding inboud
+		// see cleanup function
 		conn.Close()
 	}
-	// Clear the list of active connections
-	active_connections.connections = nil
 }
 
 func start_listener(inbound_addr, outbound_addr string) {
@@ -229,7 +214,6 @@ func start_listener(inbound_addr, outbound_addr string) {
 			continue
 		}
 
-		log.Printf("Accepted connection on %s from %s", inbound_addr, conn.RemoteAddr())
 		go handle_connection(conn, inbound_addr, outbound_addr)
 	}
 }
@@ -237,40 +221,58 @@ func start_listener(inbound_addr, outbound_addr string) {
 func handle_connection(inbound_conn net.Conn, inbound_addr, outbound_addr string) {
 	defer inbound_conn.Close()
 
-	for {
-		outbound_conn, err := get_outbound_conn(outbound_addr)
-		if err != nil {
-			log.Printf("Failed to get outbound connection to %s: %v", outbound_addr, err)
-			time.Sleep(2 * time.Second) // Retry after 2 seconds if failed
-			continue
-		}
-
-		defer outbound_conn.Close()
-
-		log.Printf("Forwarding traffic between %s (inbound: %s) and %s (outbound)", inbound_conn.RemoteAddr(), inbound_addr, outbound_addr)
-
-		// Channel to signal when either side of the connection closes
-		done := make(chan struct{})
-
-		go func() {
-			copy_data(outbound_conn, inbound_conn, done)
-		}()
-		go func() {
-			copy_data(inbound_conn, outbound_conn, done)
-		}()
-
-		// Wait for either direction to close and handle reconnect if needed
-		select {
-		case <-done:
-			log.Printf("Connection closed, closing inbound connection and retrying outbound connection to %s", outbound_addr)
-			inbound_conn.Close() // Close inbound connection
-			outbound_conn.Close() // Ensure outbound connection is closed
-			return
-		}
+	outbound_conn, err := get_outbound_conn(inbound_addr, outbound_addr)
+	
+	if err != nil {
+		log.Printf("Failed to get outbound connection to %s: %v", outbound_addr, err)
+		return
 	}
+
+	defer outbound_conn.Close()
+
+	if cfg.Verbose {
+		log.Printf("Routing traffic between (remote: %s) -- TCP --> (inbound: %s/TCP) -- mTLS --> %s (outbound: %s/mTLS)", inbound_conn.RemoteAddr(), inbound_addr, outbound_addr)
+	}
+
+	// Channel to signal when either side of the connection closes
+	done := make(chan struct{})
+
+	go func() {
+		copy_data(outbound_conn, inbound_conn)
+		clean_up(inbound_conn, outbound_conn)
+		done <- struct{}{}
+	}()
+	go func() {
+		copy_data(inbound_conn, outbound_conn)
+		clean_up(inbound_conn, outbound_conn)
+		done <- struct{}{}
+	}()
+
+	// Wait for both sides to finish
+	<-done
+	<-done
 }
 
-func get_outbound_conn(outbound_addr string) (net.Conn, error) {
+func clean_up(inbound_conn net.Conn, outbound_conn net.Conn){
+	key := outbound_conn.LocalAddr().String() + "." + outbound_conn.RemoteAddr().String()
+
+	active_conns.Lock()
+
+	if _, found := active_conns.pool[key]; found {
+		inbound_conn.Close()
+		outbound_conn.Close()
+		
+		if cfg.Verbose {
+			log.Printf("Terminating (inbound: %s.%s/TCP) -- mTLS --> (outbound: %s.%s/mTLS)", inbound_conn.RemoteAddr(), inbound_conn.LocalAddr(), outbound_conn.LocalAddr(), outbound_conn.RemoteAddr())
+		}
+
+		delete(active_conns.pool, key)
+	}
+
+	active_conns.Unlock()
+}
+
+func get_outbound_conn(inbound_addr string, outbound_addr string) (net.Conn, error) {
 	tls_config_mu.RLock()
 	defer tls_config_mu.RUnlock()
 
@@ -278,24 +280,25 @@ func get_outbound_conn(outbound_addr string) (net.Conn, error) {
 	if err != nil {
 		return nil, fmt.Errorf("failed to connect to outbound address %s: %v", outbound_addr, err)
 	}
-
-	// Add the connection to the list of active connections
-	active_connections.Lock()
-	active_connections.connections = append(active_connections.connections, conn)
-	active_connections.Unlock()
-
+	
 	if tcp_conn, ok := conn.NetConn().(*net.TCPConn); ok {
 		tcp_conn.SetKeepAlive(true)
 		tcp_conn.SetKeepAlivePeriod(5 * time.Minute)
 	}
 
+	active_conns.Lock()
+	active_conns.pool[conn.LocalAddr().String() + "." + conn.RemoteAddr().String()] = conn
+	active_conns.Unlock()
+
+	if cfg.Verbose {
+		log.Printf("Monitoring outbound: %s.%s", conn.LocalAddr(), conn.RemoteAddr())
+	}
+
 	return conn, nil
 }
 
-func copy_data(dst net.Conn, src net.Conn, done chan struct{}) {
+func copy_data(dst net.Conn, src net.Conn) {
 	if _, err := io.Copy(dst, src); err != nil {
 		log.Printf("Error copying data: %v", err)
 	}
-	// Signal that copying is done (either an error occurred or the connection was closed)
-	done <- struct{}{}
 }

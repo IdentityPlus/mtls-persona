@@ -6,8 +6,11 @@
         }
     ],
 
+    "identity_directory": "/etc/local-postgres",
+    "agent_name": "for-posgres",
     "client_cert": "/etc/local-postgres/for-posgres.cer",
     "client_key": "/etc/local-postgres/for-posgres.key",
-    "ca_cert": "/etc/local-postgres/identity-plus-node-ca-certificate-trust-store.pem",
-    "auto_reload": false
+    "broker_ca": "/etc/local-postgres/identity-plus-node-ca-certificate-trust-store.pem",
+    "auto_reload": true,
+    "verbose": true
 }
