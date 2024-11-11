@@ -1,0 +1,5 @@
+verbose: true
+id_directory: "./identity"
+device_name: "for-postgres"
+turst_store: 
+    - "./identity/service-id/identity-plus-root-ca.cer"

@@ -3,7 +3,8 @@ package main
 import (
 	"crypto/tls"
 	"crypto/x509"
-	"encoding/json"
+
+	"errors"
 	"fmt"
 	"io"
 	"io/ioutil"
@@ -12,44 +13,71 @@ import (
 	"os"
 	"sync"
 	"time"
+
+	"gopkg.in/yaml.v2"
 )
 
-type config struct {
-	AddressPairs    []address_pair  `json:"address_pairs"`
-	IdentityFolder  string          `json:"mtls_id_directory"`
-	AgentName       string          `json:"mtls_id"`
-	CaCert          string          `json:"identity_broker_ca"`
-	AutoReload      bool            `json:"auto_reload"`
-	Verbose		    bool			`json:"verbose"`
+type Self_Authority_API struct {
+	Trust_Store  []string `yaml:"trust_store"`
+	Service      string   `yaml:"identity_broker"`
+	Identity_Dir string   `yaml:"id_directory"`
+	Device_Name  string   `yaml:"device_name"`
 }
 
-type address_pair struct {
-	Inbound  string `json:"inbound"`
-	Outbound string `json:"outbound"`
+type Config struct {
+	Inbound    string `yaml:"inbound"`
+	Outbound   string `yaml:"outbound"`
+	AutoReload bool   `yaml:"auto_reload"`
+	Verbose    bool   `yaml:"verbose"`
 }
-
 
 var (
-	tls_config          *tls.Config
-	cfg                 *config
-	mu                  sync.Mutex
-	tls_config_mu       sync.RWMutex
-	cert_file_time      time.Time
+	tls_config     *tls.Config
+	cfg            *Config
+	mtls_id        *Self_Authority_API
+	mu             sync.Mutex
+	tls_config_mu  sync.RWMutex
+	cert_file_time time.Time
 	active_conns   = struct {
 		sync.RWMutex
 		pool map[string]net.Conn
 	}{}
 )
 
-func main() {
-	active_conns.pool = make(map[string]net.Conn)
+func get_self_authority() *Self_Authority_API {
+	var sa Self_Authority_API
+	yamlData, err := ioutil.ReadFile("./mtls-id.yaml")
 
-	// Load initial configuration from file
-	var err error
-	cfg, err = load_config("config.json")
+	// log.Println("----- reading -------\n" + string(yamlData) + "\n------------------")
+
+	err = yaml.Unmarshal([]byte(yamlData), &sa)
 	if err != nil {
-		log.Fatalf("Failed to load configuration: %v", err)
+		fmt.Printf("malformed identity file: %s\n", err.Error())
+		os.Exit(1)
 	}
+
+	return &sa
+}
+
+func get_config() *Config {
+	var sa Config
+	yamlData, err := ioutil.ReadFile("./mtls-persona.yaml")
+
+	// log.Println("----- reading -------\n" + string(yamlData) + "\n------------------")
+
+	err = yaml.Unmarshal([]byte(yamlData), &sa)
+	if err != nil {
+		fmt.Printf("malformed identity file: %s\n", err.Error())
+		os.Exit(1)
+	}
+
+	return &sa
+}
+
+func main() {
+	mtls_id = get_self_authority()
+	active_conns.pool = make(map[string]net.Conn)
+	cfg = get_config()
 
 	// Log the configuration for debugging
 	log.Printf("Loaded configuration: %+v", cfg)
@@ -62,11 +90,8 @@ func main() {
 		log_cert_details(certificate)
 	}
 
-
 	// Start listening for inbound connections on multiple addresses
-	for _, pair := range cfg.AddressPairs {
-		go start_listener(pair.Inbound, pair.Outbound)
-	}
+	go start_listener(cfg.Inbound, cfg.Outbound)
 
 	// Schedule certificate reload at the specified hour each day
 	if cfg.AutoReload == true {
@@ -82,13 +107,13 @@ func main() {
 				if err != nil {
 					log.Printf("Unable to reload certificates: %v", err)
 				} else if new_cert != nil {
-					close_active_connections();
+					close_active_connections()
 					log.Printf("Certificates reloaded successfully at %v", next_reload)
 					log_cert_details(new_cert)
 				} else if cfg.Verbose {
 					log.Println("No certificate changes detected; skipping reload.")
 				}
-				
+
 			}
 		}()
 
@@ -98,22 +123,6 @@ func main() {
 
 	// Prevent the main function from exiting
 	select {}
-}
-
-func load_config(filename string) (*config, error) {
-	file, err := os.Open(filename)
-	if err != nil {
-		return nil, fmt.Errorf("failed to open config file: %v", err)
-	}
-	defer file.Close()
-
-	var cfg config
-	decoder := json.NewDecoder(file)
-	if err := decoder.Decode(&cfg); err != nil {
-		return nil, fmt.Errorf("failed to decode config file: %v", err)
-	}
-
-	return &cfg, nil
 }
 
 // Helper function to check if the file has changed since the last reload
@@ -129,7 +138,7 @@ func file_has_changed(filepath string, lastModTime time.Time) (bool, time.Time, 
 	return false, fileInfo.ModTime(), nil
 }
 
-func log_cert_details(cert *x509.Certificate){
+func log_cert_details(cert *x509.Certificate) {
 	fmt.Printf("        Subject: %s\n", cert.Subject)
 	fmt.Printf("        Serial Number: %s\n", cert.SerialNumber.String())
 	fmt.Printf("        Not Before: %s\n", cert.NotBefore)
@@ -137,7 +146,7 @@ func log_cert_details(cert *x509.Certificate){
 }
 
 func reload_certificates() (*x509.Certificate, error) {
-	cert_changed, last_mod_time, err := file_has_changed(cfg.IdentityFolder + "/" + cfg.AgentName + ".cer", cert_file_time)
+	cert_changed, last_mod_time, err := file_has_changed(mtls_id.Identity_Dir+"/"+mtls_id.Device_Name+".cer", cert_file_time)
 
 	// If no files have changed, skip reloading
 	if !cert_changed {
@@ -147,31 +156,44 @@ func reload_certificates() (*x509.Certificate, error) {
 	mu.Lock()
 	defer mu.Unlock()
 
-	log.Printf("Reloading certificates from files:\n        Cert File=%s, \n        Key File=%s, \n        CA File=%s", cfg.IdentityFolder + "/" + cfg.AgentName + ".cer", cfg.IdentityFolder + "/" + cfg.AgentName + ".key", cfg.CaCert)
+	log.Printf("Reloading certificates from files:\n        Cert File=%s, \n        Key File=%s, \n        CA File=%s", mtls_id.Identity_Dir+"/"+mtls_id.Device_Name+".cer", mtls_id.Identity_Dir+"/"+mtls_id.Device_Name+".key", mtls_id.Trust_Store)
 
-	cert, err := tls.LoadX509KeyPair(cfg.IdentityFolder + "/" + cfg.AgentName + ".cer", cfg.IdentityFolder + "/" + cfg.AgentName + ".key")
+	cert, err := tls.LoadX509KeyPair(mtls_id.Identity_Dir+"/"+mtls_id.Device_Name+".cer", mtls_id.Identity_Dir+"/"+mtls_id.Device_Name+".key")
 	if err != nil {
 		return nil, fmt.Errorf("failed to load client certificate and key: %v", err)
 	}
-	
+
 	// ----- print certificate details ------------
 	parsedCert, err := x509.ParseCertificate(cert.Certificate[0])
 	if err != nil {
 		return nil, fmt.Errorf("Failed to parse certificate: %v\n", err)
 	}
 
-	ca_cert_pool := x509.NewCertPool()
-	ca_cert_bytes, err := ioutil.ReadFile(cfg.CaCert)
-	if err != nil {
-		return nil, fmt.Errorf("failed to read CA certificate: %v", err)
-	}
-	if ok := ca_cert_pool.AppendCertsFromPEM(ca_cert_bytes); !ok {
-		return nil, fmt.Errorf("failed to append CA certificate to pool")
+	/*
+		ca_cert_pool := x509.NewCertPool()
+		ca_cert_bytes, err := ioutil.ReadFile(mtls_id.Trust_Store)
+		if err != nil {
+			return nil, fmt.Errorf("failed to read CA certificate: %v", err)
+		}
+		if ok := ca_cert_pool.AppendCertsFromPEM(ca_cert_bytes); !ok {
+			return nil, fmt.Errorf("failed to append CA certificate to pool")
+		}
+	*/
+	var trusted_authorities *x509.CertPool
+	for _, ca := range mtls_id.Trust_Store {
+		root_cert, err := ioutil.ReadFile(ca)
+
+		if err != nil {
+			return nil, errors.New("error loading trust material: " + err.Error())
+		}
+
+		trusted_authorities = x509.NewCertPool()
+		_ = trusted_authorities.AppendCertsFromPEM(root_cert)
 	}
 
 	new_tls_config := &tls.Config{
 		Certificates:       []tls.Certificate{cert},
-		RootCAs:            ca_cert_pool,
+		RootCAs:            trusted_authorities,
 		InsecureSkipVerify: true, // Use this only for testing; remove in production!
 	}
 
@@ -220,7 +242,7 @@ func handle_connection(inbound_conn net.Conn, inbound_addr, outbound_addr string
 	defer inbound_conn.Close()
 
 	outbound_conn, err := get_outbound_conn(inbound_addr, outbound_addr)
-	
+
 	if err != nil {
 		log.Printf("Failed to get outbound connection to %s: %v", outbound_addr, err)
 		return
@@ -251,7 +273,7 @@ func handle_connection(inbound_conn net.Conn, inbound_addr, outbound_addr string
 	<-done
 }
 
-func clean_up(inbound_conn net.Conn, outbound_conn net.Conn){
+func clean_up(inbound_conn net.Conn, outbound_conn net.Conn) {
 	key := outbound_conn.LocalAddr().String() + "." + outbound_conn.RemoteAddr().String()
 
 	active_conns.Lock()
@@ -259,7 +281,7 @@ func clean_up(inbound_conn net.Conn, outbound_conn net.Conn){
 	if _, found := active_conns.pool[key]; found {
 		inbound_conn.Close()
 		outbound_conn.Close()
-		
+
 		if cfg.Verbose {
 			log.Printf("Terminating (inbound: %s.%s/TCP) -- mTLS --> (outbound: %s.%s/mTLS)", inbound_conn.RemoteAddr(), inbound_conn.LocalAddr(), outbound_conn.LocalAddr(), outbound_conn.RemoteAddr())
 		}
@@ -278,14 +300,14 @@ func get_outbound_conn(inbound_addr string, outbound_addr string) (net.Conn, err
 	if err != nil {
 		return nil, fmt.Errorf("failed to connect to outbound address %s: %v", outbound_addr, err)
 	}
-	
+
 	if tcp_conn, ok := conn.NetConn().(*net.TCPConn); ok {
 		tcp_conn.SetKeepAlive(true)
 		tcp_conn.SetKeepAlivePeriod(5 * time.Minute)
 	}
 
 	active_conns.Lock()
-	active_conns.pool[conn.LocalAddr().String() + "." + conn.RemoteAddr().String()] = conn
+	active_conns.pool[conn.LocalAddr().String()+"."+conn.RemoteAddr().String()] = conn
 	active_conns.Unlock()
 
 	if cfg.Verbose {
